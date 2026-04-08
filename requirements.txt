@@ -1,6 +1,5 @@
 streamlit
 opencv-python-headless
-deepface
+numpy<2.0.0
 pandas
-numpy
-tf-keras
+face_recognition
