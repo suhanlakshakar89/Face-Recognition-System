@@ -1,93 +1,93 @@
 import streamlit as st
 import cv2
+import face_recognition
 import numpy as np
 import os
-import pandas as pd
 from datetime import datetime
-from deepface import DeepFace
 
-st.set_page_config(page_title="Face Attendance", page_icon="🎓")
-st.title("🎓 Face Recognition Attendance System")
+# Page Config
+st.set_page_config(page_title="Face Attendance System", layout="centered")
+st.title("📸 Face Recognition Attendance")
 
-DATASET_PATH = "Images_dataset"
-ATTENDANCE_FILE = "attendance.csv"
+# 1. Load & Encode Known Faces (Cached to prevent timeout)
+@st.cache_data
+def load_known_data(path='Images_dataset'):
+    known_encodings = []
+    known_names = []
+    
+    if not os.path.exists(path):
+        return [], []
 
+    for person in os.listdir(path):
+        person_path = os.path.join(path, person)
+        if os.path.isdir(person_path):
+            for img_name in os.listdir(person_path):
+                img = cv2.imread(os.path.join(person_path, img_name))
+                if img is not None:
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    encodes = face_recognition.face_encodings(img_rgb)
+                    if encodes:
+                        known_encodings.append(encodes[0])
+                        known_names.append(person.upper())
+    return known_encodings, known_names
+
+# 2. Attendance Logic
 def markAttendance(name):
-    now = datetime.now()
-    date_str = now.strftime("%d/%m/%Y")
-    time_str = now.strftime("%H:%M:%S")
+    file_path = 'attendance.csv'
+    # Create file with header if not exists
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            f.write('Name,Date,Time')
 
-    if os.path.exists(ATTENDANCE_FILE):
-        df = pd.read_csv(ATTENDANCE_FILE)
-    else:
-        df = pd.DataFrame(columns=["Name", "Date", "Time"])
-
-    already = ((df["Name"].str.upper() == name.upper()) & (df["Date"] == date_str)).any()
-    if not already:
-        new_row = pd.DataFrame([{"Name": name, "Date": date_str, "Time": time_str}])
-        df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(ATTENDANCE_FILE, index=False)
-        return True
+    with open(file_path, 'r+') as f:
+        data = f.readlines()
+        name_list = [line.split(',')[0] for line in data]
+        if name not in name_list:
+            now = datetime.now()
+            f.write(f'\n{name},{now.strftime("%d/%m/%Y")},{now.strftime("%H:%M:%S")}')
+            return True
     return False
 
-uploaded_file = st.file_uploader("Upload a photo to detect", type=["jpg", "jpeg", "png"])
+# Initialize Data
+encodeListKnown, classNames = load_known_data()
 
-if uploaded_file:
+# 3. UI - Image Upload
+uploaded_file = st.file_uploader("📤 Upload Image for Recognition", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Convert uploaded file to OpenCV image
     file_bytes = np.frombuffer(uploaded_file.read(), np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    temp_path = "temp_input.jpg"
-    cv2.imwrite(temp_path, img_bgr)
+    img = cv2.imdecode(file_bytes, 1)
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
+    with st.spinner('🔍 Scanning faces...'):
+        face_locs = face_recognition.face_locations(img_rgb)
+        face_encodes = face_recognition.face_encodings(img_rgb, face_locs)
 
-    st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Uploaded Image", use_container_width=True)
-
-    if st.button("🔍 Detect Face", type="primary"):
-        with st.spinner("Detecting and matching face..."):
-            try:
-                results = DeepFace.find(
-                    img_path=temp_path,
-                    db_path=DATASET_PATH,
-                    model_name="VGG-Face",
-                    enforce_detection=True,
-                    silent=True
-                )
-
-                matched = False
-                for df_result in results:
-                    if df_result is not None and len(df_result) > 0:
-                        best_match_path = df_result.iloc[0]["identity"]
-                        name = os.path.basename(os.path.dirname(best_match_path)).upper()
-                        now = datetime.now()
-                        st.success(f"✅ Detected Person: **{name}**")
-                        st.write(f"📅 Date: {now.strftime('%d/%m/%Y')}  🕒 Time: {now.strftime('%H:%M:%S')}")
-                        newly_marked = markAttendance(name)
-                        if newly_marked:
-                            st.info("📌 Attendance Marked!")
-                        else:
-                            st.warning("⚠️ Already marked today.")
-                        matched = True
-                        break
-
-                if not matched:
-                    st.error("❌ Imposter / Not Recognized")
-
-            except ValueError as e:
-                if "Face could not be detected" in str(e):
-                    st.error("❌ No face detected in the image.")
-                else:
-                    st.error("❌ Not Recognized / Imposter")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-st.markdown("---")
-st.subheader("📋 Attendance Log")
-if os.path.exists(ATTENDANCE_FILE):
-    df = pd.read_csv(ATTENDANCE_FILE)
-    if df.empty:
-        st.info("No records yet.")
+    if not face_encodes:
+        st.error("❌ No face detected in the image.")
     else:
-        st.dataframe(df, use_container_width=True)
-else:
-    st.info("No records yet.")
+        for encodeFace, faceLoc in zip(face_encodes, face_locs):
+            faceDis = face_recognition.face_distance(encodeListKnown, encodeFace)
+            
+            if len(faceDis) > 0:
+                matchIndex = np.argmin(faceDis)
+                
+                # Threshold 0.5
+                if faceDis[matchIndex] < 0.5:
+                    name = classNames[matchIndex]
+                    is_new = markAttendance(name)
+                    color = (0, 255, 0) # Green
+                    st.success(f"✅ Detected: {name}")
+                    if is_new: st.info(f"📌 Attendance marked for {name}")
+                else:
+                    name = "UNKNOWN"
+                    color = (255, 0, 0) # Red
+                    st.warning("⚠️ Imposter / Not Recognized")
+
+                # Draw Box on Image
+                y1, x2, y2, x1 = faceLoc
+                cv2.rectangle(img_rgb, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(img_rgb, name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+        st.image(img_rgb, caption='Processed Result', use_column_width=True)
