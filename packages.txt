@@ -1,5 +1,5 @@
-streamlit==1.33.0
-opencv-python-headless
-numpy
-pandas
-face_recognition
+cmake
+libopenblas-dev
+liblapack-dev
+libx11-dev
+libgtk-3-dev
